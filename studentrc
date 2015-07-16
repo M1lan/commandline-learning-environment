@@ -1,0 +1,110 @@
+# -*- sh -*-
+## Setting up a shell environment for the linux learning server.
+## This file is meant to be sourced from ~/.bashrc or similar.
+
+## Don't get the user stuck on accidental C-s!
+stty -ixon
+
+## Enable event designators, extended glob patterns and history substitution
+shopt -s extglob
+shopt -s histverify
+
+## Some helpful vars (-rx = read-only and exported)
+
+## just in case someone sneaky used 'su', so let's get the real login and login
+## shell pid, shall we?
+#declare -rx LLS_LOGINUSER="$(who -mu | cut -d' ' -f1)"
+#declare -rx LLS_LOGINPID="$(who -mu | awk '{print $7}')"
+LLSLOGIN="$(who -mu | awk '{print $1"|"$6}')"
+declare -rx LLSLOGINUSER="${LLSLOGIN%|*}"
+declare -rx LLSLOGINPID="${LLSLOGIN#*|}"
+
+## the current shell pid and associated (pseudo)tty
+declare -rx LLS_PID="$$"        # get shell PID, see bash info page 3.4.2
+declare -rx LLS_TTY="$(who -mu | awk '{print $2}')"
+
+## global to store the student's command line
+declare -x LLS_REALCMD="nothing yet!"
+
+## The logstring that will be received by the teacher script and
+## optionally syslog, containing more or less useful stuff.
+declare -rx LLS_LOGSTR="[LLS - $LLS_LOGINUSER LOGIN-PID: $LLS_LOGINPID User: $USER PID: $LLS_PID on $LLS_TTY]"
+
+## Additional use of a syslogger can't hurt; this is not meant for IPC!
+declare -rx LLS_SYSLOG="1"
+
+## We don't want our student to accidentally override these
+declare -rx BASH_COMMAND
+declare -rx SHELLOPTS
+
+## Connect to teacher
+## create fd20 and open for both reading and writing onto tcp
+## assumes that someone is listening, e.g. "while nc -l -p 56789"
+#exec 20<>/dev/tcp/10.76.76.1/56789
+exec 20<>/dev/tcp/127.0.0.1/56789
+
+## This function is at the heart of our trap DEBUG statement
+## We retrieve the Student's command line so we can send it where we want
+function LLS_DEBUG() {
+    local LLS_CMD="$(history 1)"
+    LLS_REALCMD="${LLS_CMD##*( )?(+([0-9])[^0-9])*( )}" # strip linenums from history output
+    if [ -n "$LLS_SYSLOG" ]
+    then
+        logger -p user.info -t "$LLS_LOGSTR $PWD" "$LLS_REALCMD"
+    else
+        echo $(date +%F' '%H:%M:%S) "$LLS_LOGSTR $PWD" "$LLS_REALCMD">>/var/log/userlog.info
+    fi
+    echo $(date +%F' '%H:%M:%S) "$LLS_LOGSTR $PWD" "${LLS_CMD##*( )?(+([0-9])[^0-9])*( )}" >&20
+}
+
+## This function is for an additional trap EXIT statement (we do want to know
+## when a student leaves the partyline, do we?)
+function LLS_EXIT() {
+    if [ -n "$LLS_SYSLOG" ]
+    then
+        logger -p user.info -t "$LLS_LOGSTR" "### STUDENT DISCONNECTED ###"
+    else
+        echo $(date +%F' '%H:%M:%S) "$LLS_LOGSTR" "### STUDENT DISCONNECTED ###" >>/var/log/userlog.info
+    fi
+    echo $(date +%F' '%H:%M:%S) "$LLS_LOGSTR" "### STUDENT DISCONNECTED ###" >&20
+
+    exit "$?"                   # pass exit status, see bash info page 3.4.2
+}
+
+## Please make them read-only too!
+declare -frx LLS_DEBUG
+declare -frx LLS_EXIT
+
+## Here we go!
+if [ -n "$LLS_SYSLOG" ]
+then
+    logger -p user.info -t "$LLS_LOGSTR" "### STUDENT CONNECTED ###"
+else
+    echo $(date +%F' '%H:%M:%S) "$LLS_LOGSTR" "### STUDENT CONNECTED ###" >>/var/log/user.info
+fi
+echo -ne $LLS_LOGSTR >&20
+
+## very simple reply prototype
+function LLS_REPLY() {
+    if
+        read -t1 TUXTEXT <&20;
+    then echo "[Teacher says: ${TUXTEXT}]";
+    else echo "[Teacher says nothing]";
+    fi
+}
+
+## The trap DEBUG and trap EXIT statements
+## Note: I find self referencing debug statements kind of lame, so I decided to
+## temporarily disable the debug trap from inside the debug trap (sup dawg!)
+## Also note use of PROMPT_COMMAND to actually run the whole shebang
+declare -rx PROMPT_COMMAND="LLS_REPLY && trap 'LLS_DEBUG; trap DEBUG' DEBUG"
+## We also want to know when a student logs off
+trap LLS_EXIT EXIT
+
+## the next command is echoed to the teacher.
+: .studentrc done!
+
+## The teacher is named tux; use 'tux help me' to chat to it
+alias tux=:
+
+#EOF
